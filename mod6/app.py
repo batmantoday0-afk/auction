@@ -1,43 +1,44 @@
 #!/usr/bin/env python3
 """
-app_recommender_new.py
-
-Flask web app: full-database, trend-aware price recommender for Pokétwo auctions.
-MongoDB Atlas version (replaces SQLite). Keep your HTML embedded as before.
+Full Flask app (fixed) — MongoDB Atlas version of the Pokétwo recommender.
+Drop into mod6/app.py and deploy.
 """
 
-import statistics
-import math
 import os
-from flask import Flask, render_template_string, request
+import re
+import math
+import statistics
+from flask import Flask, render_template_string, request, Response
 from pymongo import MongoClient
 from pymongo.server_api import ServerApi
+from bson import json_util
 
-# --- Configuration & safety/tuning parameters ---
+# ------------------------------
+# Configuration / tuning
+# ------------------------------
 MAX_DEV_PERCENT = 0.15
 MIN_DEV_PERCENT = 0.03
 MAX_MULTIPLIER = 2.0
 MAX_TREND_PCT = 0.25
 RECENT_WINDOW = 20
 
-# --- Flask setup ---
+# ------------------------------
+# Flask + MongoDB setup
+# ------------------------------
 app = Flask(__name__)
 
-# --- MongoDB Setup ---
 MONGO_URI = os.environ.get("MONGO_URI")
 if not MONGO_URI:
-    raise RuntimeError("MONGO_URI environment variable not set! Set it in Render/Env vars.")
+    raise RuntimeError("MONGO_URI environment variable not set! Add it in Render/Env vars.")
 
 client = MongoClient(MONGO_URI, server_api=ServerApi("1"))
-db = client["auctions"]           # database name (you imported to 'auctions')
-auctions_col = db["auctions"]     # collection name (you created as 'auctions')
+db = client["auctions"]           # DB name you imported into
+auctions_col = db["auctions"]     # Collection name you used
 
-# --- Core recommendation algorithm (unchanged) ---
+# ------------------------------
+# Recommendation algorithm (same logic as before)
+# ------------------------------
 def get_price_recommendation(chron_prices):
-    """
-    Accepts chron_prices: list of numeric prices in chronological order (oldest -> newest).
-    Returns dict with keys: success, count, original_count, median, stdev, conservative_bid, aggressive_bid, trend.
-    """
     if not chron_prices:
         return {"success": False, "message": "No past sales found for these criteria."}
 
@@ -108,14 +109,20 @@ def get_price_recommendation(chron_prices):
     aggressive_bid = max(conservative_bid, int(round(aggressive)))
 
     return {
-        "success": True, "count": m, "original_count": n, "median": int(round(median)),
-        "stdev": round(stdev, 2), "conservative_bid": conservative_bid,
-        "aggressive_bid": aggressive_bid, "trend": trend_info
+        "success": True,
+        "count": m,
+        "original_count": n,
+        "median": int(round(median)),
+        "stdev": round(stdev, 2),
+        "conservative_bid": conservative_bid,
+        "aggressive_bid": aggressive_bid,
+        "trend": trend_info
     }
 
-# --- HTML template (kept exactly as in your original file) ---
-HTML_TEMPLATE = """
-<!DOCTYPE html>
+# ------------------------------
+# HTML template (kept from your original)
+# ------------------------------
+HTML_TEMPLATE = """<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
@@ -210,15 +217,15 @@ HTML_TEMPLATE = """
 </html>
 """
 
-# --- Flask route & UI (uses MongoDB queries) ---
+# ------------------------------
+# Routes
+# ------------------------------
 @app.route("/", methods=["GET", "POST"])
 def index():
     auctions_display = []
     recommendation = {}
 
-    # list of individual IV names (same as original)
     iv_names = ['iv_hp', 'iv_atk', 'iv_def', 'iv_spatk', 'iv_spdef', 'iv_speed']
-
     form_data = {
         "species": request.form.get("species", "").strip(),
         "shiny": request.form.get("shiny", "any"),
@@ -229,18 +236,21 @@ def index():
         form_data[iv] = request.form.get(iv, "")
 
     if request.method == "POST" and form_data["species"]:
-        # Build MongoDB query equivalent to original SQL filters
-        query = {"species": {"$regex": f"^{form_data['species']}$", "$options": "i"}}
+        # species: escaped substring (so "Pikachu" matches "Snowman Pikachu", "Surf Pikachu", etc.)
+        safe_species = re.escape(form_data['species'])
+        query = {"species": {"$regex": safe_species, "$options": "i"}}
 
+        # shiny: handle 1/0, booleans and common string forms
         if form_data["shiny"] == "yes":
-            # some imports used 1/0; if your data uses ints, query matches True or 1
-            query["shiny"] = True
+            query["shiny"] = {"$in": [1, True, "1", "true", "True"]}
         elif form_data["shiny"] == "no":
-            query["shiny"] = False
+            query["shiny"] = {"$in": [0, False, "0", "false", "False"]}
 
+        # gender: case-insensitive exact
         if form_data["gender"] in ("Male", "Female"):
-            query["gender"] = {"$regex": f"^{form_data['gender']}$", "$options": "i"}
+            query["gender"] = {"$regex": f"^{re.escape(form_data['gender'])}$", "$options": "i"}
 
+        # min iv total
         min_iv_total_str = form_data.get("min_iv_total", "").strip()
         if min_iv_total_str:
             try:
@@ -249,7 +259,7 @@ def index():
             except ValueError:
                 pass
 
-        # individual IV filters
+        # individual IVs
         for iv in iv_names:
             iv_val_str = form_data.get(iv, "").strip()
             if iv_val_str:
@@ -260,13 +270,33 @@ def index():
                 except ValueError:
                     pass
 
-        # rec_auctions: only winning_bid + timestamp, chronological (oldest->newest)
-        rec_auctions = list(auctions_col.find(query, {"winning_bid": 1, "timestamp": 1, "_id": 0}).sort("timestamp", 1))
+        # Recommendation & display queries should only use docs that have a winning_bid
+        rec_query = dict(query)
+        rec_query["winning_bid"] = {"$ne": None}
 
-        # auctions_display: full docs sorted by winning_bid desc, limit 500
-        auctions_display = list(auctions_col.find(query, {"_id": 0}).sort("winning_bid", -1).limit(500))
+        # Chronological for recommendation (oldest -> newest).
+        # Some docs have empty "timestamp" but have "created_at", so sort by both.
+        rec_auctions = list(
+            auctions_col.find(rec_query, {"winning_bid": 1, "timestamp": 1, "created_at": 1, "_id": 0})
+                        .sort([("timestamp", 1), ("created_at", 1)])
+        )
 
-        chron_bids = [int(a.get("winning_bid")) for a in rec_auctions if a.get("winning_bid") is not None]
+        # Display: sorted by winning_bid desc
+        auctions_display = list(
+            auctions_col.find(rec_query, {"_id": 0})
+                        .sort("winning_bid", -1)
+                        .limit(500)
+        )
+
+        # Robust parse winning_bid into ints (skip non-numeric)
+        chron_bids = []
+        for a in rec_auctions:
+            b = a.get("winning_bid")
+            try:
+                chron_bids.append(int(float(b)))
+            except (TypeError, ValueError):
+                continue
+
         recommendation = get_price_recommendation(chron_bids)
 
     return render_template_string(HTML_TEMPLATE,
@@ -274,7 +304,18 @@ def index():
                                   auctions_display=auctions_display,
                                   recommendation=recommendation)
 
-# --- Main ---
+# Debug endpoint to inspect collection quickly on deployed app
+@app.route("/_debug/sample")
+def debug_sample():
+    total = auctions_col.count_documents({})
+    has_bid = auctions_col.count_documents({"winning_bid": {"$exists": True, "$ne": None}})
+    example = auctions_col.find_one({}, {"_id": 0})
+    payload = {"total_docs": total, "docs_with_winning_bid": has_bid, "example_doc": example}
+    return Response(json_util.dumps(payload, indent=2), mimetype="application/json")
+
+# ------------------------------
+# Run locally (Render uses Gunicorn)
+# ------------------------------
 if __name__ == "__main__":
-    # When running locally you won't have MONGO_URI in env; ensure you set it for local testing if needed.
-    app.run(debug=True, port=5001)
+    port = int(os.environ.get("PORT", 5001))
+    app.run(host="0.0.0.0", port=port, debug=True)
