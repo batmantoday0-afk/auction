@@ -3,18 +3,17 @@
 app_recommender_new.py
 
 Flask web app: full-database, trend-aware price recommender for Pokétwo auctions.
-This version includes individual sub-IV filters (HP, Atk, Def, etc.).
+MongoDB Atlas version (replaces SQLite). Keep your HTML embedded as before.
 """
 
-import sqlite3
 import statistics
 import math
-from pathlib import Path
-from flask import Flask, render_template_string, request, g
-MONGO_URI = os.environ.get("MONGO_URI")
+import os
+from flask import Flask, render_template_string, request
+from pymongo import MongoClient
+from pymongo.server_api import ServerApi
 
 # --- Configuration & safety/tuning parameters ---
-DATABASE = Path("auctions.db")
 MAX_DEV_PERCENT = 0.15
 MIN_DEV_PERCENT = 0.03
 MAX_MULTIPLIER = 2.0
@@ -24,21 +23,16 @@ RECENT_WINDOW = 20
 # --- Flask setup ---
 app = Flask(__name__)
 
-# --- DB helpers ---
-def get_db():
-    """Open a sqlite connection for the current request context (row access by name)."""
-    if 'db' not in g:
-        g.db = sqlite3.connect(DATABASE)
-        g.db.row_factory = sqlite3.Row
-    return g.db
+# --- MongoDB Setup ---
+MONGO_URI = os.environ.get("MONGO_URI")
+if not MONGO_URI:
+    raise RuntimeError("MONGO_URI environment variable not set! Set it in Render/Env vars.")
 
-@app.teardown_appcontext
-def close_db(exception):
-    db = g.pop('db', None)
-    if db is not None:
-        db.close()
+client = MongoClient(MONGO_URI, server_api=ServerApi("1"))
+db = client["auctions"]           # database name (you imported to 'auctions')
+auctions_col = db["auctions"]     # collection name (you created as 'auctions')
 
-# --- Core recommendation algorithm (expects chronological prices: oldest -> newest) ---
+# --- Core recommendation algorithm (unchanged) ---
 def get_price_recommendation(chron_prices):
     """
     Accepts chron_prices: list of numeric prices in chronological order (oldest -> newest).
@@ -119,171 +113,168 @@ def get_price_recommendation(chron_prices):
         "aggressive_bid": aggressive_bid, "trend": trend_info
     }
 
-# --- Flask route & UI ---
+# --- HTML template (kept exactly as in your original file) ---
+HTML_TEMPLATE = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Pokétwo Price Recommender</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial; background:#f0f2f5; color:#111; margin:0; padding:2rem; }
+    .container { max-width: 960px; margin:auto; background:#fff; padding:2rem; border-radius:10px; box-shadow:0 6px 20px rgba(0,0,0,0.06); }
+    h1 { color:#1877f2; margin-top:0; border-bottom: 1px solid #ddd; padding-bottom: 0.5rem; }
+    .form-grid { display:grid; grid-template-columns:1fr 1fr 1fr; gap:1rem; align-items:center; margin-bottom:1rem; }
+    .species-input { grid-column:1 / -1; }
+    .iv-grid { display:grid; grid-template-columns: repeat(6, 1fr); gap: 0.5rem; grid-column: 1 / -1; }
+    .iv-grid input { text-align: center; }
+    h3 { margin-bottom: 0.5rem; color: #666; font-size: 0.9rem; }
+    input, select { width:100%; padding:10px; border-radius:6px; border:1px solid #e0e3e8; box-sizing:border-box; font-size:1rem; }
+    button { grid-column:1 / -1; padding:12px 16px; background:#1877f2; color:#fff; border:none; border-radius:8px; cursor:pointer; font-weight:600; font-size: 1.1rem; }
+    .recommendation { background:#eaf5ff; border:1px solid #d0eaff; border-radius:8px; padding:1rem; text-align:center; margin-bottom:1rem; }
+    .price { font-size:1.8rem; font-weight:700; color:#0a58d6; }
+    .auction-list { list-style:none; padding:0; margin:0; }
+    .auction-item { display:flex; justify-content:space-between; gap:1rem; padding:0.75rem; border-radius:8px; background:#fafafa; border:1px solid #eee; margin-bottom:0.6rem; align-items:center; }
+    .trend { font-size:0.9rem; color:#444; margin-top:0.5rem; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>Pokétwo Price Recommender</h1>
+    <form method="post">
+      <div class="form-grid">
+        <input class="species-input" type="text" name="species" placeholder="Enter Pokémon name..." value="{{ form_data.species }}" required>
+        <select name="shiny">
+          <option value="any" {% if form_data.shiny == 'any' %}selected{% endif %}>Any Shiny Status</option>
+          <option value="yes" {% if form_data.shiny == 'yes' %}selected{% endif %}>Shiny Only</option>
+          <option value="no" {% if form_data.shiny == 'no' %}selected{% endif %}>Non-Shiny Only</option>
+        </select>
+        <select name="gender">
+          <option value="any" {% if form_data.gender == 'any' %}selected{% endif %}>Any Gender</option>
+          <option value="Male" {% if form_data.gender == 'Male' %}selected{% endif %}>Male</option>
+          <option value="Female" {% if form_data.gender == 'Female' %}selected{% endif %}>Female</option>
+        </select>
+        <input type="number" step="0.01" name="min_iv_total" placeholder="Min Total IV %" value="{{ form_data.min_iv_total }}">
+        
+        <div class="iv-grid">
+            <input type="number" name="iv_hp" min="0" max="31" placeholder="HP" value="{{ form_data.iv_hp }}">
+            <input type="number" name="iv_atk" min="0" max="31" placeholder="Atk" value="{{ form_data.iv_atk }}">
+            <input type="number" name="iv_def" min="0" max="31" placeholder="Def" value="{{ form_data.iv_def }}">
+            <input type="number" name="iv_spatk" min="0" max="31" placeholder="SpA" value="{{ form_data.iv_spatk }}">
+            <input type="number" name="iv_spdef" min="0" max="31" placeholder="SpD" value="{{ form_data.iv_spdef }}">
+            <input type="number" name="iv_speed" min="0" max="31" placeholder="Spe" value="{{ form_data.iv_speed }}">
+        </div>
+
+        <button type="submit">Get Price Recommendation</button>
+      </div>
+    </form>
+
+    {% if request.method == "POST" %}
+      <div class="results-container">
+        {% if recommendation.success %}
+          <div class="recommendation">
+            <h2>Recommended Price Range</h2>
+            <p>Based on {{ recommendation.count }} cleaned past sales ({{ recommendation.original_count }} total examined).</p>
+            <div class="price">{{ "{:,.0f}".format(recommendation.conservative_bid) }} - {{ "{:,.0f}".format(recommendation.aggressive_bid) }}</div>
+            <p>Median: {{ "{:,.0f}".format(recommendation.median) }} | Stdev: {{ recommendation.stdev }}</p>
+            {% if recommendation.trend.direction != 'flat' %}
+              <div class="trend">Trend: {{ recommendation.trend.direction }} (slope={{ recommendation.trend.slope }}, pct={{ (recommendation.trend.trend_pct * 100) | round(2) }}%)</div>
+            {% endif %}
+          </div>
+        {% else %}
+          <div class="recommendation"><h3>{{ recommendation.message }}</h3></div>
+        {% endif %}
+
+        {% if auctions_display %}
+          <h3>Past Sales Data (Highest Price First)</h3>
+          <ul class="auction-list">
+            {% for a in auctions_display %}
+              <li class="auction-item">
+                <div>
+                  {% if a.shiny %}✨{% endif %} <strong>{{ a.species }}</strong>
+                  (Lvl {{ a.level or '?' }}, {{ '%.1f'|format(a.iv_total|float) if a.iv_total else '?' }}% IV)
+                  <small style="color: #555; display: block;">
+                    IVs: {{a.iv_hp or '?'}}/{{a.iv_atk or '?'}}/{{a.iv_def or '?'}}/{{a.iv_spatk or '?'}}/{{a.iv_spdef or '?'}}/{{a.iv_speed or '?'}}
+                  </small>
+                </div>
+                <div><strong>{{ "{:,.0f}".format(a.winning_bid) if a.winning_bid else '—' }}</strong></div>
+              </li>
+            {% endfor %}
+          </ul>
+        {% endif %}
+      </div>
+    {% endif %}
+  </div>
+</body>
+</html>
+"""
+
+# --- Flask route & UI (uses MongoDB queries) ---
 @app.route("/", methods=["GET", "POST"])
 def index():
     auctions_display = []
     recommendation = {}
-    
-    # --- NEW: List of individual IVs for easier processing ---
+
+    # list of individual IV names (same as original)
     iv_names = ['iv_hp', 'iv_atk', 'iv_def', 'iv_spatk', 'iv_spdef', 'iv_speed']
-    
+
     form_data = {
-        "species": request.form.get("species", ""),
+        "species": request.form.get("species", "").strip(),
         "shiny": request.form.get("shiny", "any"),
         "gender": request.form.get("gender", "any"),
         "min_iv_total": request.form.get("min_iv_total", "")
     }
-    # --- NEW: Add individual IVs to form data ---
     for iv in iv_names:
         form_data[iv] = request.form.get(iv, "")
 
     if request.method == "POST" and form_data["species"]:
-        db = get_db()
+        # Build MongoDB query equivalent to original SQL filters
+        query = {"species": {"$regex": f"^{form_data['species']}$", "$options": "i"}}
 
-        base_where = "WHERE species = ? COLLATE NOCASE"
-        params = [form_data['species'].strip()]
-
-        if form_data["shiny"] == "yes": base_where += " AND shiny = 1"
-        elif form_data["shiny"] == "no": base_where += " AND shiny = 0"
+        if form_data["shiny"] == "yes":
+            # some imports used 1/0; if your data uses ints, query matches True or 1
+            query["shiny"] = True
+        elif form_data["shiny"] == "no":
+            query["shiny"] = False
 
         if form_data["gender"] in ("Male", "Female"):
-            base_where += " AND gender = ? COLLATE NOCASE"
-            params.append(form_data["gender"])
+            query["gender"] = {"$regex": f"^{form_data['gender']}$", "$options": "i"}
 
         min_iv_total_str = form_data.get("min_iv_total", "").strip()
         if min_iv_total_str:
             try:
                 min_iv_val = float(min_iv_total_str)
-                if min_iv_val > 0:
-                    base_where += " AND iv_total >= ?"
-                    params.append(min_iv_val)
-            except ValueError: pass
-            
-        # --- NEW: Add individual IV filters to the query ---
+                query["iv_total"] = {"$gte": min_iv_val}
+            except ValueError:
+                pass
+
+        # individual IV filters
         for iv in iv_names:
             iv_val_str = form_data.get(iv, "").strip()
             if iv_val_str:
                 try:
                     iv_val = int(iv_val_str)
                     if 0 <= iv_val <= 31:
-                        base_where += f" AND {iv} >= ?"
-                        params.append(iv_val)
-                except ValueError: pass
+                        query[iv] = {"$gte": iv_val}
+                except ValueError:
+                    pass
 
-        rec_query = f"SELECT winning_bid, timestamp FROM auctions {base_where} AND winning_bid IS NOT NULL ORDER BY timestamp ASC"
-        rec_auctions = db.execute(rec_query, params).fetchall()
+        # rec_auctions: only winning_bid + timestamp, chronological (oldest->newest)
+        rec_auctions = list(auctions_col.find(query, {"winning_bid": 1, "timestamp": 1, "_id": 0}).sort("timestamp", 1))
 
-        disp_query = f"SELECT * FROM auctions {base_where} AND winning_bid IS NOT NULL ORDER BY winning_bid DESC LIMIT 500"
-        auctions_display = db.execute(disp_query, params).fetchall()
+        # auctions_display: full docs sorted by winning_bid desc, limit 500
+        auctions_display = list(auctions_col.find(query, {"_id": 0}).sort("winning_bid", -1).limit(500))
 
-        chron_bids = [int(a["winning_bid"]) for a in rec_auctions if a["winning_bid"] is not None]
+        chron_bids = [int(a.get("winning_bid")) for a in rec_auctions if a.get("winning_bid") is not None]
         recommendation = get_price_recommendation(chron_bids)
 
-    return render_template_string("""
-    <!DOCTYPE html>
-    <html lang="en">
-    <head>
-      <meta charset="utf-8">
-      <meta name="viewport" content="width=device-width,initial-scale=1">
-      <title>Pokétwo Price Recommender</title>
-      <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial; background:#f0f2f5; color:#111; margin:0; padding:2rem; }
-        .container { max-width: 960px; margin:auto; background:#fff; padding:2rem; border-radius:10px; box-shadow:0 6px 20px rgba(0,0,0,0.06); }
-        h1 { color:#1877f2; margin-top:0; border-bottom: 1px solid #ddd; padding-bottom: 0.5rem; }
-        .form-grid { display:grid; grid-template-columns:1fr 1fr 1fr; gap:1rem; align-items:center; margin-bottom:1rem; }
-        .species-input { grid-column:1 / -1; }
-        .iv-grid { display:grid; grid-template-columns: repeat(6, 1fr); gap: 0.5rem; grid-column: 1 / -1; }
-        .iv-grid input { text-align: center; }
-        h3 { margin-bottom: 0.5rem; color: #666; font-size: 0.9rem; }
-        input, select { width:100%; padding:10px; border-radius:6px; border:1px solid #e0e3e8; box-sizing:border-box; font-size:1rem; }
-        button { grid-column:1 / -1; padding:12px 16px; background:#1877f2; color:#fff; border:none; border-radius:8px; cursor:pointer; font-weight:600; font-size: 1.1rem; }
-        .recommendation { background:#eaf5ff; border:1px solid #d0eaff; border-radius:8px; padding:1rem; text-align:center; margin-bottom:1rem; }
-        .price { font-size:1.8rem; font-weight:700; color:#0a58d6; }
-        .auction-list { list-style:none; padding:0; margin:0; }
-        .auction-item { display:flex; justify-content:space-between; gap:1rem; padding:0.75rem; border-radius:8px; background:#fafafa; border:1px solid #eee; margin-bottom:0.6rem; align-items:center; }
-        .trend { font-size:0.9rem; color:#444; margin-top:0.5rem; }
-      </style>
-    </head>
-    <body>
-      <div class="container">
-        <h1>Pokétwo Price Recommender</h1>
-        <form method="post">
-          <div class="form-grid">
-            <input class="species-input" type="text" name="species" placeholder="Enter Pokémon name..." value="{{ form_data.species }}" required>
-            <select name="shiny">
-              <option value="any" {% if form_data.shiny == 'any' %}selected{% endif %}>Any Shiny Status</option>
-              <option value="yes" {% if form_data.shiny == 'yes' %}selected{% endif %}>Shiny Only</option>
-              <option value="no" {% if form_data.shiny == 'no' %}selected{% endif %}>Non-Shiny Only</option>
-            </select>
-            <select name="gender">
-              <option value="any" {% if form_data.gender == 'any' %}selected{% endif %}>Any Gender</option>
-              <option value="Male" {% if form_data.gender == 'Male' %}selected{% endif %}>Male</option>
-              <option value="Female" {% if form_data.gender == 'Female' %}selected{% endif %}>Female</option>
-            </select>
-            <input type="number" step="0.01" name="min_iv_total" placeholder="Min Total IV %" value="{{ form_data.min_iv_total }}">
-            
-            <div class="iv-grid">
-                <input type="number" name="iv_hp" min="0" max="31" placeholder="HP" value="{{ form_data.iv_hp }}">
-                <input type="number" name="iv_atk" min="0" max="31" placeholder="Atk" value="{{ form_data.iv_atk }}">
-                <input type="number" name="iv_def" min="0" max="31" placeholder="Def" value="{{ form_data.iv_def }}">
-                <input type="number" name="iv_spatk" min="0" max="31" placeholder="SpA" value="{{ form_data.iv_spatk }}">
-                <input type="number" name="iv_spdef" min="0" max="31" placeholder="SpD" value="{{ form_data.iv_spdef }}">
-                <input type="number" name="iv_speed" min="0" max="31" placeholder="Spe" value="{{ form_data.iv_speed }}">
-            </div>
-
-            <button type="submit">Get Price Recommendation</button>
-          </div>
-        </form>
-
-        {% if request.method == "POST" %}
-          <div class="results-container">
-            {% if recommendation.success %}
-              <div class="recommendation">
-                <h2>Recommended Price Range</h2>
-                <p>Based on {{ recommendation.count }} cleaned past sales ({{ recommendation.original_count }} total examined).</p>
-                <div class="price">{{ "{:,.0f}".format(recommendation.conservative_bid) }} - {{ "{:,.0f}".format(recommendation.aggressive_bid) }}</div>
-                <p>Median: {{ "{:,.0f}".format(recommendation.median) }} | Stdev: {{ recommendation.stdev }}</p>
-                {% if recommendation.trend.direction != 'flat' %}
-                  <div class="trend">Trend: {{ recommendation.trend.direction }} (slope={{ recommendation.trend.slope }}, pct={{ (recommendation.trend.trend_pct * 100) | round(2) }}%)</div>
-                {% endif %}
-              </div>
-            {% else %}
-              <div class="recommendation"><h3>{{ recommendation.message }}</h3></div>
-            {% endif %}
-
-            {% if auctions_display %}
-              <h3>Past Sales Data (Highest Price First)</h3>
-              <ul class="auction-list">
-                {% for a in auctions_display %}
-                  <li class="auction-item">
-                    <div>
-                      {% if a.shiny %}✨{% endif %} <strong>{{ a.species }}</strong>
-                      (Lvl {{ a.level or '?' }}, {{ '%.1f'|format(a.iv_total|float) if a.iv_total else '?' }}% IV)
-                      <small style="color: #555; display: block;">
-                        IVs: {{a.iv_hp or '?'}}/{{a.iv_atk or '?'}}/{{a.iv_def or '?'}}/{{a.iv_spatk or '?'}}/{{a.iv_spdef or '?'}}/{{a.iv_speed or '?'}}
-                      </small>
-                    </div>
-                    <div><strong>{{ "{:,.0f}".format(a.winning_bid) if a.winning_bid else '—' }}</strong></div>
-                  </li>
-                {% endfor %}
-              </ul>
-            {% endif %}
-          </div>
-        {% endif %}
-      </div>
-    </body>
-    </html>
-    """, form_data=form_data, auctions_display=auctions_display, recommendation=recommendation)
+    return render_template_string(HTML_TEMPLATE,
+                                  form_data=form_data,
+                                  auctions_display=auctions_display,
+                                  recommendation=recommendation)
 
 # --- Main ---
 if __name__ == "__main__":
-    if not DATABASE.exists():
-        print(f"FATAL ERROR: The database file '{DATABASE}' was not found in the working directory.")
-        print("Please place your 'auctions.db' file next to this script and re-run.")
-    else:
-        print("--- Starting Flask Price Recommender server ---")
-        print(f"Database found at: '{DATABASE}'")
-        print("Open your browser at: http://127.0.0.1:5001")
-        app.run(debug=True, port=5001)
-
+    # When running locally you won't have MONGO_URI in env; ensure you set it for local testing if needed.
+    app.run(debug=True, port=5001)
