@@ -11,6 +11,7 @@ import statistics
 import math
 from pathlib import Path
 from flask import Flask, render_template_string, request, g
+MONGO_URI = os.environ.get("MONGO_URI")
 
 # --- Configuration & safety/tuning parameters ---
 DATABASE = Path("auctions.db")
@@ -285,3 +286,4 @@ if __name__ == "__main__":
         print(f"Database found at: '{DATABASE}'")
         print("Open your browser at: http://127.0.0.1:5001")
         app.run(debug=True, port=5001)
+
