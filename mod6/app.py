@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """
-Full Flask app (fixed) — MongoDB Atlas version of the Pokétwo recommender.
-Drop into mod6/app.py and deploy.
+Full Flask app (strict species match) — MongoDB Atlas version of the Pokétwo recommender.
+
+Behavior:
+- Species search is exact-match (case-insensitive), equivalent to SQL `WHERE species = ? COLLATE NOCASE`.
+- Other logic (recommendation algorithm, UI, debug route, robust parsing) unchanged.
 """
 
 import os
@@ -36,13 +39,22 @@ db = client["auctions"]           # DB name you imported into
 auctions_col = db["auctions"]     # Collection name you used
 
 # ------------------------------
-# Recommendation algorithm (same logic as before)
+# Recommendation algorithm (unchanged)
 # ------------------------------
 def get_price_recommendation(chron_prices):
     if not chron_prices:
         return {"success": False, "message": "No past sales found for these criteria."}
 
-    nums = [int(p) for p in chron_prices if p is not None]
+    # convert to ints, skip bad values
+    nums = []
+    for p in chron_prices:
+        try:
+            if p is None:
+                continue
+            nums.append(int(p))
+        except (ValueError, TypeError):
+            continue
+
     n = len(nums)
     if n < 2:
         return {"success": False, "message": "Not enough numeric sales for a reliable recommendation."}
@@ -120,7 +132,7 @@ def get_price_recommendation(chron_prices):
     }
 
 # ------------------------------
-# HTML template (kept from your original)
+# HTML template (unchanged)
 # ------------------------------
 HTML_TEMPLATE = """<!DOCTYPE html>
 <html lang="en">
@@ -236,9 +248,10 @@ def index():
         form_data[iv] = request.form.get(iv, "")
 
     if request.method == "POST" and form_data["species"]:
-        # species: escaped substring (so "Pikachu" matches "Snowman Pikachu", "Surf Pikachu", etc.)
+        # --- STRICT species exact-match (case-insensitive) ---
+        # Equivalent of SQL: WHERE species = ? COLLATE NOCASE
         safe_species = re.escape(form_data['species'])
-        query = {"species": {"$regex": safe_species, "$options": "i"}}
+        query = {"species": {"$regex": f"^{safe_species}$", "$options": "i"}}
 
         # shiny: handle 1/0, booleans and common string forms
         if form_data["shiny"] == "yes":
