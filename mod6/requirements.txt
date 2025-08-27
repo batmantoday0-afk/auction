@@ -1,0 +1,4 @@
+Flask==3.*
+gunicorn==21.*
+pymongo[srv]==4.*
+flask-cors==4.*
